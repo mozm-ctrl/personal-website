@@ -17,6 +17,11 @@ import os
 import sys
 
 try:
+    import readline  # noqa: F401  让 input() 支持中文退格、方向键和历史记录
+except ImportError:
+    pass
+
+try:
     import requests
 except ImportError:
     print("找不到 requests 库。请先激活虚拟环境并运行：pip install -r requirements.txt")
