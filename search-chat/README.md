@@ -117,3 +117,88 @@ export OPENROUTER_MODEL="openai/gpt-5.2"
 9. **README 和费用**：费用变成「搜索服务按次计费 + 模型按 token 计费」，两个账户分别充值。
 
 需要的话可以再开一个任务，让我按这个思路把方案 ③ 写出来。
+
+---
+
+## 五、完全免费的本地版（Ollama + DuckDuckGo）
+
+不想花钱、不想注册任何账号？用 `search_chat_local.py`：
+
+- **大模型**在你自己的 Mac 上运行（[Ollama](https://ollama.com) + 开源模型 `qwen3:8b`），不联网也能聊天。
+- **搜索**用 DuckDuckGo，不需要注册、不需要 Key。
+- 全程 **0 元**。原来的 `search_chat.py`（OpenRouter 版）不受影响，两个可以随便换着用。
+
+电脑要求：Apple 芯片（M1 及以上）、内存 16GB 更顺畅（8GB 请用小模型 `qwen3:4b`）、硬盘剩余 6GB 以上。
+
+### 1. 安装 Ollama（只需要做一次）
+
+1. 用浏览器打开 <https://ollama.com/download>，点 **Download for macOS**，下载到 `Ollama-darwin.zip`。
+2. 双击解压，把 **Ollama.app** 拖进「应用程序」文件夹。
+3. 打开「应用程序」里的 Ollama。第一次会问是否安装命令行工具，点同意（可能要输电脑开机密码；不输也没关系，见下面常见问题）。
+4. 屏幕右上角菜单栏出现一个**小羊驼图标**，说明 Ollama 在运行了。
+
+检查是否装好（打开「终端」输入）：
+
+```bash
+ollama --version
+```
+
+### 2. 下载模型（只需要做一次，约 5.2GB）
+
+```bash
+ollama pull qwen3:8b
+```
+
+下载完成后，用 `ollama list` 能看到 `qwen3:8b`。
+
+### 3. 安装依赖（只需要做一次）
+
+```bash
+cd ~/search-chat/search-chat
+source .venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 4. 运行
+
+```bash
+cd ~/search-chat/search-chat && .venv/bin/python search_chat_local.py
+```
+
+看到 `你：` 就可以提问了。问「今天有什么科技新闻？」它会先搜索，再回答并在末尾列出来源链接；问「1+1 等于几」这种常识就不会搜索，直接回答。输入 `exit` 退出。
+
+其他选项：
+
+```bash
+.venv/bin/python search_chat_local.py --model qwen3:4b   # 换模型（要先 ollama pull qwen3:4b）
+.venv/bin/python search_chat_local.py --think            # 让模型先“思考”再回答，更慢，复杂问题可能更准
+.venv/bin/python search_chat_local.py --max-results 3    # 每次搜索取几条结果（1-10）
+```
+
+想用 [Tavily](https://tavily.com) 搜索（每月有免费额度，结果通常比 DuckDuckGo 干净）：注册拿到 Key 后，在运行前执行 `export TAVILY_API_KEY="tvly-你的Key"`。没设置这个变量时自动用 DuckDuckGo。
+
+### 5. 常见问题
+
+| 你看到的 | 原因 | 怎么办 |
+|---|---|---|
+| `连不上 Ollama` | Ollama 没在运行 | 打开「应用程序」里的 Ollama，等菜单栏出现小羊驼图标再运行 |
+| `模型 xxx 还没有下载` | 没执行第 2 步，或模型名写错 | 运行提示里给出的 `ollama pull ...` 命令；`ollama list` 查看已下载的模型 |
+| `command not found: ollama` | 命令行工具没装上（第一次打开时没输密码） | 用完整路径代替：`/Applications/Ollama.app/Contents/Resources/ollama pull qwen3:8b` |
+| `DuckDuckGo 暂时限流了` | 短时间内搜索太多次 | 等一两分钟再问；或者改用 Tavily |
+| `不支持工具调用` | 换的模型不会用工具，没法联网 | 换回 `qwen3:8b`，或在 <https://ollama.com/search?c=tools> 找带 tools 标签的模型 |
+| 回答很慢 / 电脑变卡 | 本地模型很吃内存 | 关掉一些大程序；或用小模型 `qwen3:4b` |
+| 回答里有明显错误 | 本地小模型能力有限，有时会理解错资料 | 点开来源链接核对；重要的事用 OpenRouter 版再问一次 |
+
+不用的时候，点菜单栏小羊驼图标 → **Quit Ollama**，可以释放约 6GB 内存。
+
+### 6. 和 OpenRouter 版对比
+
+| | 本地版 `search_chat_local.py` | OpenRouter 版 `search_chat.py` |
+|---|---|---|
+| 费用 | **完全免费** | 按次付费，一次通常几美分以内 |
+| 需要注册 | 不需要 | 需要 OpenRouter 账号、充值、API Key |
+| 速度（M4 / 16GB 实测） | 不搜索约 1–2 秒，联网搜索约 20–25 秒（第一次启动多等十几秒加载模型） | 通常 5–20 秒，取决于模型 |
+| 回答质量 | 8B 小模型：日常问答够用，但总结资料时偶尔挑错重点、遗漏细节 | 大模型 + 专业搜索，质量明显更好 |
+| 搜索 | DuckDuckGo（免费，偶尔限流）或 Tavily | OpenRouter 服务端搜索（Exa 或模型原生搜索） |
+| 内存占用 | 运行时约 6GB | 几乎不占 |
+| 隐私 | 对话只在本机，只有搜索关键词会发给搜索引擎 | 对话会发给 OpenRouter 和模型厂商 |

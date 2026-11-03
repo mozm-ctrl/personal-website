@@ -1,3 +1,5 @@
 requests>=2.28,<3
 # macOS 自带的 Python 3.9 使用 LibreSSL，urllib3 2.x 会打印警告，这里固定到 1.x
 urllib3>=1.26,<2
+# 本地免费版（search_chat_local.py）用的 DuckDuckGo 搜索库，不需要 Key
+ddgs>=9.6,<10
