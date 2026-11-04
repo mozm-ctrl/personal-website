@@ -202,3 +202,91 @@ cd ~/search-chat/search-chat && .venv/bin/python search_chat_local.py
 | 搜索 | DuckDuckGo（免费，偶尔限流）或 Tavily | OpenRouter 服务端搜索（Exa 或模型原生搜索） |
 | 内存占用 | 运行时约 6GB | 几乎不占 |
 | 隐私 | 对话只在本机，只有搜索关键词会发给搜索引擎 | 对话会发给 OpenRouter 和模型厂商 |
+
+---
+
+## 六、Go 版（`go/` 文件夹）
+
+`go/` 里是本地版 `search_chat_local.py` 的 Go 改写：同样用 Ollama 本地模型 + DuckDuckGo 免费搜索（设置了 `TAVILY_API_KEY` 时改用 Tavily），同样的中文提示和参数。多了一个**网页模式**，可以放进你自己的网站里用。
+
+好处：编译成**一个文件**就能运行，不用建虚拟环境、不用 `pip install`。
+
+前提：已经按第五节装好 Ollama 并 `ollama pull qwen3:8b`；电脑上装了 Go（`go version` 能看到版本号）。
+
+### 1. 编译（只需要做一次；改了代码要重新编译）
+
+```bash
+cd ~/search-chat/search-chat/go && go build -o search-chat-local .
+```
+
+第一次编译会自动下载几个依赖库，要等几十秒。完成后文件夹里多出一个 `search-chat-local`。
+
+### 2. 在终端里聊天
+
+```bash
+cd ~/search-chat/search-chat/go && ./search-chat-local
+```
+
+用法和 Python 版一样：输入问题回车，输入 `exit` 退出。中文可以正常退格，上下方向键能翻出之前问过的问题。参数也一样：
+
+```bash
+./search-chat-local --model qwen3:4b   # 换模型
+./search-chat-local --think            # 思考模式
+./search-chat-local --max-results 3    # 每次搜索取几条结果（1-10）
+```
+
+### 3. 网页模式：放进自己的网站
+
+```bash
+./search-chat-local --web :8080
+```
+
+然后用浏览器打开 <http://localhost:8080>，就是一个聊天页面。终端窗口要一直开着，关掉或按 Ctrl+C 网页就不能用了。
+
+放进你的网站有两种方法：
+
+**方法一：嵌入整个聊天框（最简单）**。在网站的 HTML 里加一行：
+
+```html
+<iframe src="http://localhost:8080/" style="width:100%;height:600px;border:0"></iframe>
+```
+
+**方法二：自己做界面，调用接口**。接口是 `POST /api/chat`：
+
+```js
+const resp = await fetch("http://localhost:8080/api/chat", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  // messages 是对话历史（只能有 user / assistant），最后一条是这次的问题
+  body: JSON.stringify({ messages: [{ role: "user", content: "今天有什么科技新闻？" }] }),
+});
+const data = await resp.json();
+// data.answer：回答；data.sources：[{n, title, url}] 来源；data.seconds：用时；出错时有 data.error
+```
+
+网站和接口不在同一个地址时，浏览器会拦截方法二的请求，需要启动时告诉程序允许你的网站：
+
+```bash
+./search-chat-local --web :8080 --allow-origin http://localhost:3000   # 换成你网站的地址
+```
+
+⚠️ **重要：模型跑在你自己的 Mac 上**。
+
+- `--web :8080` 默认只允许本机访问：你自己在这台 Mac 上打开网站时能用，别人访问你的网站时用不了。
+- 想让同一个 Wi-Fi 下的手机或其他电脑用：改成 `--web 0.0.0.0:8080`，再用 `http://你Mac的局域网IP:8080` 访问（「系统设置 → Wi-Fi → 详细信息」里能看到 IP）。
+- 如果你的网站放在 GitHub Pages 等公网上，想让**所有访客**都能用，需要一台一直开着、能跑 Ollama 的电脑或服务器，并把这个程序公开到网上（比如用 Cloudflare Tunnel）。那样任何人都能消耗你的电脑资源，最好再加上访问密码或次数限制——需要的话可以再开一个任务做这一步。
+- 本地模型一次只能答一个问题，几个人同时问会排队。
+
+### 4. 和 Python 版的区别
+
+| | Python 版 `search_chat_local.py` | Go 版 `go/search-chat-local` |
+|---|---|---|
+| 安装 | 要建虚拟环境、`pip install` | `go build` 一次，得到一个文件 |
+| 启动命令 | `.venv/bin/python search_chat_local.py` | `./search-chat-local` |
+| 网页 / 放进网站 | 没有 | `--web :8080`，带聊天页面和 `/api/chat` 接口 |
+| DuckDuckGo 搜索 | `ddgs` 库（会在多个搜索后端之间切换） | 自己实现的 `ddg.go`，只用 DuckDuckGo 网页版；中文问题搜中文网页（cn-zh） |
+| 网页正文提取 | lxml | goquery（效果相近） |
+| 中文退格 / 历史 | readline | liner 库 |
+| 速度（M4 / 16GB 实测） | 联网约 20–25 秒，不联网 1–2 秒 | 基本一样（时间主要花在本地模型上） |
+
+`search-chat-local` 是编译出来的文件，已加进 `go/.gitignore`，不会提交到 GitHub。
