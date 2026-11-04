@@ -9,6 +9,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"os"
 	"time"
 )
 
@@ -21,6 +22,15 @@ func main() {
 	n := flag.Int("n", 5, "返回条数")
 	searxngURL := flag.String("searxng", "http://localhost:8888", "SearXNG 地址")
 	flag.Parse()
+	switch *only {
+	case "", "ddg", "news", "searxng", "search":
+	default:
+		fmt.Fprintf(os.Stderr, "-only 只能是 ddg / news / searxng / search，收到 %q\n", *only)
+		os.Exit(2)
+	}
+	if *page > 1 && *region == "cn-zh" {
+		fmt.Fprintln(os.Stderr, "提示：cn-zh 不支持翻页，翻页请加 -region us-en 或 wt-wt")
+	}
 
 	queries := []string{"大模型 联网搜索", "golang http client timeout"}
 	if *query != "" {
