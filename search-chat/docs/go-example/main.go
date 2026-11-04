@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"time"
+	"unicode"
 )
 
 func main() {
@@ -39,6 +40,7 @@ func main() {
 	ctx := context.Background()
 
 	for _, q := range queries {
+		lang := langOf(q)
 		if *only == "" || *only == "ddg" {
 			start := time.Now()
 			results, err := DDGSearch(ctx, q, DDGOptions{Region: *region, TimeLimit: *timeLimit, MaxResults: *n, Page: *page})
@@ -55,12 +57,12 @@ func main() {
 		}
 		if *only == "" || *only == "searxng" {
 			start := time.Now()
-			results, err := SearXNGSearch(ctx, q, SearXNGOptions{BaseURL: *searxngURL, MaxResults: *n})
+			results, err := SearXNGSearch(ctx, q, SearXNGOptions{BaseURL: *searxngURL, Language: map[string]string{"zh": "zh-CN", "en": "en"}[lang], MaxResults: *n})
 			report("SearXNG", q, start, results, err)
 		}
 		if *only == "" || *only == "search" {
 			start := time.Now()
-			results, source, err := Search(ctx, q, *n, *searxngURL)
+			results, source, err := Search(ctx, q, lang, *n, *searxngURL)
 			report("Search（自动切换，来源 "+source+"）", q, start, results, err)
 		}
 	}
@@ -79,4 +81,14 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(r[:n]) + "…"
+}
+
+// langOf 粗略判断搜索词语言：含汉字为 "zh"，否则为 "en"。
+func langOf(q string) string {
+	for _, r := range q {
+		if unicode.Is(unicode.Han, r) {
+			return "zh"
+		}
+	}
+	return "en"
 }
