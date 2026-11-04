@@ -1,0 +1,6 @@
+# 编译产物和本地配置不要提交
+/search-chat-server
+/search-chat-server.exe
+/examples/go-embed/go-embed
+.env
+*.log
