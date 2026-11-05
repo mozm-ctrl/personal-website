@@ -229,7 +229,7 @@
         if (typeof data.cost === "number") {
           var cost = document.createElement("div");
           cost.className = "cost";
-          cost.textContent = "本次消耗 " + data.cost + " 积分";
+          cost.textContent = data.cost > 0 ? "本次消耗 " + data.cost + " 积分" : "本次未扣积分";
           wait.firstChild.appendChild(cost);
         }
         history.push({ role: "user", content: q }, { role: "assistant", content: data.answer || "" });

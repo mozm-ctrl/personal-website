@@ -103,7 +103,7 @@ curl http://服务器地址:8080/healthz
 | 变量 | 说明 | 默认 |
 | --- | --- | --- |
 | `BILLING_MODE` | `per_request` 按次 / `per_token` 按用量 | `per_request` |
-| `PRICE_PER_REQUEST` | 按次：每次提问扣几积分 | `1` |
+| `PRICE_PER_REQUEST` | 按次：每次提问扣几积分。设置了任何搜索价时可以填 `0`（只收搜索费） | `1` |
 | `PRICE_PER_SEARCH` | 每次联网搜索额外扣几积分（两种方式都生效） | `0` |
 | `PRICE_PER_SEARCH_DUCKDUCKGO` / `_TAVILY` / `_BOCHA` | 按搜索引擎单独定价，设置了的引擎用这个价，没设置的用 `PRICE_PER_SEARCH`。例如 `DUCKDUCKGO=0`、`TAVILY=1`、`BOCHA=1`：用免费的 DuckDuckGo 不加钱，退到收费引擎才加 | — |
 | `PRICE_INPUT_PER_1K` / `PRICE_OUTPUT_PER_1K` | 按用量：每 1000 个输入 / 输出 token 多少积分，可以是小数 | — |
@@ -324,7 +324,25 @@ cfg.Pricing = searchchat.Pricing{
 | 「今天的科技新闻」 | DuckDuckGo 搜 1 次 | 2 |
 | 「今天的科技新闻」 | DuckDuckGo 被限流，改用 Tavily 搜 1 次 | 3 |
 
-预扣按最贵的引擎算（这里是 2 + 2×1 = 4），回答后按实际用的引擎多退少补。命中缓存的搜索按当初搜到它的引擎计价；失败的搜索不收费。结算时 `Charge.SearchEngines` 会列出每次成功搜索用的引擎，方便对账。
+**只在用了收费搜索引擎时扣费**：把 `PerRequest` 设成 `0`、DuckDuckGo 设成 `0`：
+
+```go
+cfg.Pricing = searchchat.Pricing{
+    PerRequest:   0,
+    SearchPrices: map[string]int64{"duckduckgo": 0, "tavily": 1, "bocha": 1},
+}
+// 或环境变量：PRICE_PER_REQUEST=0 PRICE_PER_SEARCH_DUCKDUCKGO=0 PRICE_PER_SEARCH_TAVILY=1 PRICE_PER_SEARCH_BOCHA=1
+```
+
+| 问题 | 搜索情况 | 扣用户 |
+| --- | --- | --- |
+| 「1+1」 | 不搜索 | 0 |
+| 「今天的科技新闻」 | DuckDuckGo 搜 1 次 | 0 |
+| 「今天的科技新闻」 | DuckDuckGo 被限流，改用 Tavily 搜 1 次 | 1 |
+
+这时提问前仍会预扣 0 + 2×1 = 2 积分（事先不知道会不会退到收费引擎），没用收费引擎就全部退回，前端显示「本次未扣积分」。所以用户余额至少要有 2 积分才能提问，余额不足仍返回 402。注意 `PerRequest=0` 时模型调用不向用户收费，用在线模型（DeepSeek、OpenAI 等）的模型费由网站主人承担。
+
+预扣按最贵的引擎算（上一个例子是 2 + 2×1 = 4），回答后按实际用的引擎多退少补。命中缓存的搜索按当初搜到它的引擎计价；失败的搜索不收费。结算时 `Charge.SearchEngines` 会列出每次成功搜索用的引擎，方便对账。
 
 ### 接口说明
 

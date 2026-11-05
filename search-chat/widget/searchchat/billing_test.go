@@ -381,6 +381,14 @@ func TestPricing(t *testing.T) {
 	if p.reserve() != 4 {
 		t.Errorf("per engine reserve = %d, want 2 + 2×1", p.reserve())
 	}
+	// 只在用收费引擎时扣费：PerRequest=0 不会被改成默认 1
+	p = Pricing{SearchPrices: map[string]int64{"duckduckgo": 0, "tavily": 1, "bocha": 1}}.withDefaults()
+	if p.PerRequest != 0 || p.cost(0, 0, nil) != 0 || p.cost(0, 0, ddg) != 0 || p.cost(0, 0, tav) != 1 || p.reserve() != 2 {
+		t.Errorf("paid engines only: per=%d cost=%d/%d/%d reserve=%d", p.PerRequest, p.cost(0, 0, nil), p.cost(0, 0, ddg), p.cost(0, 0, tav), p.reserve())
+	}
+	if len((Pricing{PerRequest: -1}).withDefaults().problems()) == 0 {
+		t.Error("negative PerRequest should be a config problem")
+	}
 	// 没列出的引擎用 PerSearch
 	p = Pricing{PerRequest: 1, PerSearch: 5, SearchPrices: map[string]int64{"duckduckgo": 0}}.withDefaults()
 	if p.cost(0, 0, tav) != 6 || p.cost(0, 0, ddg) != 1 || p.reserve() != 11 {

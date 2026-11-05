@@ -70,7 +70,7 @@ const (
 // DuckDuckGo 出问题、改用收费引擎时每次加 1 积分。命中缓存的搜索按当初搜到它的引擎计价。
 type Pricing struct {
 	Mode       string // BILLING_MODE：per_request（默认）/ per_token
-	PerRequest int64  // PRICE_PER_REQUEST：按次，每次提问扣几积分，默认 1
+	PerRequest int64  // PRICE_PER_REQUEST：按次，每次提问扣几积分。计费规则一项都没填时默认 1；填了搜索价时 0 就是 0（只收搜索费）
 	PerSearch  int64  // PRICE_PER_SEARCH：每次联网搜索额外加几积分，默认 0（两种方式都生效）
 	// PRICE_PER_SEARCH_DUCKDUCKGO / _TAVILY / _BOCHA：按搜索引擎单独定价，键是引擎名，没列出的引擎用 PerSearch
 	SearchPrices map[string]int64
@@ -83,7 +83,8 @@ func (p Pricing) withDefaults() Pricing {
 	if p.Mode == "" {
 		p.Mode = BillingPerRequest
 	}
-	if p.Mode == BillingPerRequest && p.PerRequest <= 0 {
+	// 什么都没配时每次 1 积分；配了搜索价就尊重 PerRequest=0，例如「只在用收费搜索引擎时扣费」
+	if p.Mode == BillingPerRequest && p.PerRequest == 0 && p.PerSearch == 0 && len(p.SearchPrices) == 0 {
 		p.PerRequest = 1
 	}
 	if p.Mode == BillingPerToken && p.MaxCharge <= 0 {
@@ -96,6 +97,9 @@ func (p Pricing) withDefaults() Pricing {
 var searchEngineNames = []string{"duckduckgo", "tavily", "bocha"}
 
 func (p Pricing) problems() []string {
+	if p.PerRequest < 0 {
+		return []string{"PRICE_PER_REQUEST 不能是负数"}
+	}
 	if p.PerSearch < 0 {
 		return []string{"PRICE_PER_SEARCH 不能是负数"}
 	}
