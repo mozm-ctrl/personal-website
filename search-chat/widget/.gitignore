@@ -4,3 +4,4 @@
 /examples/go-embed/go-embed
 .env
 *.log
+/examples/billing-demo/billing-demo

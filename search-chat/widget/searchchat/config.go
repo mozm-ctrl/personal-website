@@ -1,6 +1,7 @@
 package searchchat
 
 import (
+	"net/http"
 	"os"
 	"strconv"
 	"strings"
@@ -29,6 +30,19 @@ type Config struct {
 	RateLimitPerMinute int      // RATE_LIMIT_PER_MIN：每个 IP 每分钟最多提问几次，默认 10，0 表示不限
 	TrustProxy         bool     // TRUST_PROXY=1：服务在 Nginx 等反向代理后面时，按 X-Forwarded-For 识别真实 IP
 	MaxConcurrent      int      // MAX_CONCURRENT：同时最多处理几个提问，默认 4（本地 Ollama 建议 1）
+
+	// 以下用于接入网站自己的账号系统，只能在代码里设置（方式 B），不设置时和以前完全一样。
+
+	// Authenticate 可选：校验网站自己的登录 Token，返回用户 ID。
+	// 设置后，返回错误或空 ID 的请求一律 401「请先登录」；限流改为按用户 ID 计算。
+	// Token 一般用 BearerToken(r) 取（前端以 Authorization: Bearer <token> 发送）。
+	Authenticate func(r *http.Request) (userID string, err error)
+	// Billing 可选：从用户余额里扣费，必须同时设置 Authenticate。
+	Billing Billing
+	// Pricing 计费规则，默认按次每次 1 积分。见 Pricing 的说明。
+	Pricing Pricing
+	// DAILY_LIMIT_PER_USER：设置了 Authenticate 时，每个用户每天最多问几次，0 表示不限
+	DailyLimitPerUser int
 }
 
 // ConfigFromEnv 从环境变量读取配置，没填的项用默认值。
@@ -49,6 +63,15 @@ func ConfigFromEnv() Config {
 		RateLimitPerMinute: envInt("RATE_LIMIT_PER_MIN", 10),
 		TrustProxy:         envBool("TRUST_PROXY"),
 		MaxConcurrent:      envInt("MAX_CONCURRENT", 4),
+		Pricing: Pricing{
+			Mode:        strings.ToLower(env("BILLING_MODE", "")),
+			PerRequest:  int64(envInt("PRICE_PER_REQUEST", 0)),
+			PerSearch:   int64(envInt("PRICE_PER_SEARCH", 0)),
+			InputPer1K:  envFloat("PRICE_INPUT_PER_1K", 0),
+			OutputPer1K: envFloat("PRICE_OUTPUT_PER_1K", 0),
+			MaxCharge:   int64(envInt("MAX_CHARGE", 0)),
+		},
+		DailyLimitPerUser: envInt("DAILY_LIMIT_PER_USER", 0),
 	}
 }
 
@@ -74,6 +97,12 @@ func (c Config) Problems() []string {
 	default:
 		p = append(p, "SEARCH_ENGINE 只能是 auto / duckduckgo / tavily / bocha")
 	}
+	if c.Billing != nil {
+		if c.Authenticate == nil {
+			p = append(p, "设置了 Billing 但没有设置 Authenticate（不知道该扣谁的钱）")
+		}
+		p = append(p, c.Pricing.withDefaults().problems()...)
+	}
 	return p
 }
 
@@ -93,6 +122,7 @@ func (c Config) withDefaults() Config {
 	if c.MaxConcurrent <= 0 {
 		c.MaxConcurrent = 4
 	}
+	c.Pricing = c.Pricing.withDefaults()
 	for i, o := range c.AllowedOrigins {
 		c.AllowedOrigins[i] = strings.TrimRight(strings.TrimSpace(o), "/")
 	}
@@ -109,6 +139,13 @@ func env(name, def string) string {
 func envInt(name string, def int) int {
 	if n, err := strconv.Atoi(env(name, "")); err == nil {
 		return n
+	}
+	return def
+}
+
+func envFloat(name string, def float64) float64 {
+	if f, err := strconv.ParseFloat(env(name, ""), 64); err == nil {
+		return f
 	}
 	return def
 }

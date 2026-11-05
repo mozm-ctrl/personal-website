@@ -77,7 +77,13 @@ type llmClient struct {
 }
 
 // complete 调用一次 /chat/completions。tools 为 false 时不提供搜索工具，模型只能直接回答。
-func (c *llmClient) complete(ctx context.Context, messages []message, tools bool) (message, error) {
+// tokenUsage 是模型返回的 usage，用于按用量计费。
+type tokenUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+}
+
+func (c *llmClient) complete(ctx context.Context, messages []message, tools bool) (message, tokenUsage, error) {
 	req := map[string]any{
 		"model":    c.cfg.LLMModel,
 		"messages": messages,
@@ -92,7 +98,7 @@ func (c *llmClient) complete(ctx context.Context, messages []message, tools bool
 	payload, _ := json.Marshal(req)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.cfg.LLMBaseURL+"/chat/completions", bytes.NewReader(payload))
 	if err != nil {
-		return message{}, &llmError{Status: 500, Public: "模型接口地址 LLM_BASE_URL 写得不对。", Detail: err.Error()}
+		return message{}, tokenUsage{}, &llmError{Status: 500, Public: "模型接口地址 LLM_BASE_URL 写得不对。", Detail: err.Error()}
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	if c.cfg.LLMAPIKey != "" {
@@ -102,39 +108,40 @@ func (c *llmClient) complete(ctx context.Context, messages []message, tools bool
 	if err != nil {
 		var netErr interface{ Timeout() bool }
 		if errors.As(err, &netErr) && netErr.Timeout() {
-			return message{}, &llmError{Status: 504, Public: "模型回答超时了，请稍后再试。", Detail: c.redact(err.Error())}
+			return message{}, tokenUsage{}, &llmError{Status: 504, Public: "模型回答超时了，请稍后再试。", Detail: c.redact(err.Error())}
 		}
-		return message{}, &llmError{Status: 502, Public: "连不上模型服务，请稍后再试。", Detail: c.redact(err.Error())}
+		return message{}, tokenUsage{}, &llmError{Status: 502, Public: "连不上模型服务，请稍后再试。", Detail: c.redact(err.Error())}
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 	if err != nil {
-		return message{}, &llmError{Status: 502, Public: "读取模型回答失败，请重试。", Detail: c.redact(err.Error())}
+		return message{}, tokenUsage{}, &llmError{Status: 502, Public: "读取模型回答失败，请重试。", Detail: c.redact(err.Error())}
 	}
 	if resp.StatusCode != 200 {
 		detail := fmt.Sprintf("HTTP %d: %s", resp.StatusCode, c.redact(truncate(string(body), 300)))
 		switch {
 		case resp.StatusCode == 401 || resp.StatusCode == 403:
-			return message{}, &llmError{Status: 502, Public: "模型服务拒绝了请求（服务端的 LLM_API_KEY 无效或没有权限）。", Detail: detail}
+			return message{}, tokenUsage{}, &llmError{Status: 502, Public: "模型服务拒绝了请求（服务端的 LLM_API_KEY 无效或没有权限）。", Detail: detail}
 		case resp.StatusCode == 404:
-			return message{}, &llmError{Status: 502, Public: "找不到模型（检查服务端的 LLM_BASE_URL 和 LLM_MODEL）。", Detail: detail}
+			return message{}, tokenUsage{}, &llmError{Status: 502, Public: "找不到模型（检查服务端的 LLM_BASE_URL 和 LLM_MODEL）。", Detail: detail}
 		case resp.StatusCode == 429:
-			return message{}, &llmError{Status: 503, Public: "模型服务繁忙或额度用完了，请稍后再试。", Detail: detail}
+			return message{}, tokenUsage{}, &llmError{Status: 503, Public: "模型服务繁忙或额度用完了，请稍后再试。", Detail: detail}
 		case bytes.Contains(body, []byte("does not support tools")):
-			return message{}, &llmError{Status: 502, Public: "当前模型不支持工具调用，没法联网搜索，请换一个模型。", Detail: detail}
+			return message{}, tokenUsage{}, &llmError{Status: 502, Public: "当前模型不支持工具调用，没法联网搜索，请换一个模型。", Detail: detail}
 		default:
-			return message{}, &llmError{Status: 502, Public: fmt.Sprintf("模型服务返回错误（HTTP %d）。", resp.StatusCode), Detail: detail}
+			return message{}, tokenUsage{}, &llmError{Status: 502, Public: fmt.Sprintf("模型服务返回错误（HTTP %d）。", resp.StatusCode), Detail: detail}
 		}
 	}
 	var data struct {
 		Choices []struct {
 			Message message `json:"message"`
 		} `json:"choices"`
+		Usage tokenUsage `json:"usage"`
 	}
 	if err := json.Unmarshal(body, &data); err != nil || len(data.Choices) == 0 {
-		return message{}, &llmError{Status: 502, Public: "模型返回的内容看不懂。", Detail: c.redact(truncate(string(body), 300))}
+		return message{}, tokenUsage{}, &llmError{Status: 502, Public: "模型返回的内容看不懂。", Detail: c.redact(truncate(string(body), 300))}
 	}
-	return data.Choices[0].Message, nil
+	return data.Choices[0].Message, data.Usage, nil
 }
 
 // redact 防止上游把 Key 原样带回错误信息里，进而被写进日志。

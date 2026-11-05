@@ -40,6 +40,23 @@ type turnResult struct {
 	Answer   string
 	Sources  []source // 本轮搜索到的全部来源
 	Searches []searchLog
+	Usage    tokenUsage // 本轮多次调用模型的 token 总和
+}
+
+// okSearches 是成功的搜索次数（用于计费，失败的搜索不收费）。
+func (r turnResult) okSearches() int {
+	n := 0
+	for _, s := range r.Searches {
+		if s.Error == "" {
+			n++
+		}
+	}
+	return n
+}
+
+func (r *turnResult) addUsage(u tokenUsage) {
+	r.Usage.PromptTokens += u.PromptTokens
+	r.Usage.CompletionTokens += u.CompletionTokens
 }
 
 type engine struct {
@@ -54,7 +71,8 @@ func (e *engine) ask(ctx context.Context, messages []message) (turnResult, error
 	var res turnResult
 	for call := 0; call < maxModelCalls; call++ {
 		budgetLeft := len(res.Searches) < maxSearchesPerTurn
-		msg, err := e.llm.complete(ctx, messages, budgetLeft)
+		msg, usage, err := e.llm.complete(ctx, messages, budgetLeft)
+		res.addUsage(usage)
 		if err != nil {
 			return res, err
 		}
@@ -69,7 +87,8 @@ func (e *engine) ask(ctx context.Context, messages []message) (turnResult, error
 	}
 	// 模型一直要求搜索：不再提供工具，逼它根据已有资料回答。
 	messages = append(messages, message{Role: "user", Content: "（系统提示：搜索次数已用完，请直接根据上面的资料回答我的问题。）"})
-	msg, err := e.llm.complete(ctx, messages, false)
+	msg, usage, err := e.llm.complete(ctx, messages, false)
+	res.addUsage(usage)
 	if err != nil {
 		return res, err
 	}

@@ -11,6 +11,12 @@
  *   data-greeting  第一句欢迎语
  *   data-color     主题色，默认 #2563eb
  *   data-position  right（默认）或 left
+ *
+ * 接入网站账号系统（服务端设置了 Authenticate / Billing 时）：
+ *   data-auth-storage  从 localStorage 的这个键读取用户登录 Token，以 Authorization: Bearer <token> 发送
+ *   data-login-url     未登录（401）时提示里附上的登录链接
+ *   data-recharge-url  余额不足（402）时提示里附上的充值链接
+ *   也可以由网站自己的 JS 在登录后调用 window.SearchChat.setToken(token)，退出登录时 setToken(null)。
  */
 (function () {
   "use strict";
@@ -28,6 +34,30 @@
   var greeting = attr("greeting", "你好！我会先上网搜索再回答，并在最后列出来源链接。");
   var color = attr("color", "#2563eb");
   var side = attr("position", "right") === "left" ? "left" : "right";
+  var authStorage = attr("auth-storage", "");
+  var loginURL = attr("login-url", "");
+  var rechargeURL = attr("recharge-url", "");
+
+  // window.SearchChat.setToken(token)：网站登录后设置；在本脚本加载前设置 window.SearchChat = {token: "..."} 也可以
+  var api = window.SearchChat || {};
+  var userToken = api.token || null;
+  api.setToken = function (t) { userToken = t || null; };
+  window.SearchChat = api;
+
+  function currentToken() {
+    if (userToken) return userToken;
+    if (!authStorage) return null;
+    try {
+      var v = window.localStorage.getItem(authStorage);
+      if (v && v.charAt(0) === '"') v = JSON.parse(v); // 有的网站用 JSON.stringify 存
+      return v || null;
+    } catch (e) { return null; }
+  }
+
+  function newRequestID() {
+    if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+    return "r" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+  }
 
   var css =
     ":host{all:initial}" +
@@ -45,6 +75,8 @@
     ".msg .b{max-width:88%;padding:8px 12px;border-radius:12px;white-space:pre-wrap;word-break:break-word;background:var(--bot)}" +
     ".msg.user{justify-content:flex-end}.msg.user .b{background:var(--c);color:#fff}" +
     ".msg.err .b{color:#dc2626}" +
+    ".msg.err .b a{color:var(--link);margin-left:6px}" +
+    ".cost{margin-top:6px;font-size:11px;color:var(--mut)}" +
     ".msg.wait .b{color:var(--mut)}" +
     "sup a{color:var(--link);text-decoration:none;font-size:11px;margin:0 1px}" +
     ".src{margin-top:8px;padding-top:6px;border-top:1px solid var(--bd);font-size:12px;white-space:normal;color:var(--mut)}" +
@@ -103,7 +135,7 @@
 
   function safeURL(u) {
     try {
-      var p = new URL(u);
+      var p = new URL(u, location.href); // 允许 /login 这样的相对地址
       return p.protocol === "http:" || p.protocol === "https:" ? p.href : null;
     } catch (e) { return null; }
   }
@@ -147,6 +179,12 @@
     }
   }
 
+  function linkError(msg, href, linkText) {
+    var e = new Error(msg);
+    e.plain = true; e.href = href; e.linkText = linkText;
+    return e;
+  }
+
   bubble().firstChild.textContent = greeting;
 
   input.addEventListener("keydown", function (e) {
@@ -166,8 +204,10 @@
     var wait = bubble("wait");
     wait.firstChild.textContent = "搜索、思考中……";
 
-    var headers = { "Content-Type": "application/json" };
+    var headers = { "Content-Type": "application/json", "X-Request-ID": newRequestID() };
     if (token) headers["X-Chat-Token"] = token;
+    var bearer = currentToken();
+    if (bearer) headers["Authorization"] = "Bearer " + bearer;
     fetch(endpoint, {
       method: "POST",
       headers: headers,
@@ -175,6 +215,9 @@
     })
       .then(function (resp) {
         return resp.json().catch(function () { return {}; }).then(function (data) {
+          // 访问口令（data-token）错误也是 401，靠 code 区分
+          if (resp.status === 401 && (data.code === "login_required" || !data.error)) throw linkError("请先登录", loginURL, "去登录");
+          if (resp.status === 402) throw linkError("余额不足", rechargeURL, "去充值");
           if (!resp.ok) throw new Error(data.error || "HTTP " + resp.status);
           return data;
         });
@@ -183,11 +226,27 @@
         wait.className = "msg";
         wait.firstChild.textContent = "";
         renderAnswer(wait.firstChild, data.answer || "", data.sources || []);
+        if (typeof data.cost === "number") {
+          var cost = document.createElement("div");
+          cost.className = "cost";
+          cost.textContent = "本次消耗 " + data.cost + " 积分";
+          wait.firstChild.appendChild(cost);
+        }
         history.push({ role: "user", content: q }, { role: "assistant", content: data.answer || "" });
         if (history.length > 20) history = history.slice(-20);
       })
       .catch(function (err) {
         wait.className = "msg err";
+        if (err.plain) { // 401 / 402：不加「出错了」，有链接就附上
+          wait.firstChild.textContent = err.message;
+          var href = err.href && safeURL(err.href);
+          if (href) {
+            var a = document.createElement("a");
+            a.href = href; a.textContent = err.linkText;
+            wait.firstChild.appendChild(a);
+          }
+          return;
+        }
         // 浏览器因 CORS 拦截时只会给出 Failed to fetch
         wait.firstChild.textContent = "出错了：" + (err.message === "Failed to fetch" ? "连不上聊天服务（网络或跨域限制）" : err.message);
       })
