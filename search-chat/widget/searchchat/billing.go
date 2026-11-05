@@ -8,6 +8,7 @@ import (
 	"math"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -43,12 +44,13 @@ var (
 // Charge 是一次提问的结算信息，传给 Billing.Settle。
 type Charge struct {
 	UserID           string
-	RequestID        string // 每次提问唯一，可用来做幂等
-	PromptTokens     int    // 输入 token 数（一轮里多次调用模型的总和）
-	CompletionTokens int    // 输出 token 数
-	Searches         int    // 成功的联网搜索次数
-	Reserved         int64  // 提问前冻结的积分
-	Cost             int64  // 应扣积分（≤ Reserved）
+	RequestID        string   // 每次提问唯一，可用来做幂等
+	PromptTokens     int      // 输入 token 数（一轮里多次调用模型的总和）
+	CompletionTokens int      // 输出 token 数
+	Searches         int      // 成功的联网搜索次数
+	SearchEngines    []string // 每次成功搜索用的引擎（duckduckgo / tavily / bocha），按引擎定价时用来对账
+	Reserved         int64    // 提问前冻结的积分
+	Cost             int64    // 应扣积分（≤ Reserved）
 }
 
 // 计费方式
@@ -59,16 +61,22 @@ const (
 
 // Pricing 是计费规则。只在设置了 Config.Billing 时生效。
 //
-// 按次：每次提问扣 PerRequest，每次联网搜索再加 PerSearch。预扣 = PerRequest + 最多搜索次数 × PerSearch。
-// 按用量：ceil((输入token × InputPer1K + 输出token × OutputPer1K) / 1000) + 搜索次数 × PerSearch，
+// 按次：每次提问扣 PerRequest，每次联网搜索再加这次所用引擎的价格。预扣 = PerRequest + 最多搜索次数 × 最贵的搜索价。
+// 按用量：ceil((输入token × InputPer1K + 输出token × OutputPer1K) / 1000) + 搜索费，
 // 预扣 MaxCharge，实际费用超过 MaxCharge 时按 MaxCharge 收。
+//
+// 搜索价：SearchPrices 里有这个引擎就用它，没有就用 PerSearch。例如 PerSearch 不填、
+// SearchPrices = {"duckduckgo": 0, "tavily": 1, "bocha": 1}：用免费的 DuckDuckGo 不加钱，
+// DuckDuckGo 出问题、改用收费引擎时每次加 1 积分。命中缓存的搜索按当初搜到它的引擎计价。
 type Pricing struct {
-	Mode        string  // BILLING_MODE：per_request（默认）/ per_token
-	PerRequest  int64   // PRICE_PER_REQUEST：按次，每次提问扣几积分，默认 1
-	PerSearch   int64   // PRICE_PER_SEARCH：每次联网搜索额外加几积分，默认 0（两种方式都生效）
-	InputPer1K  float64 // PRICE_INPUT_PER_1K：按用量，每 1000 个输入 token 多少积分
-	OutputPer1K float64 // PRICE_OUTPUT_PER_1K：按用量，每 1000 个输出 token 多少积分
-	MaxCharge   int64   // MAX_CHARGE：按用量，每次提问最多扣几积分（也是预扣金额），默认 100
+	Mode       string // BILLING_MODE：per_request（默认）/ per_token
+	PerRequest int64  // PRICE_PER_REQUEST：按次，每次提问扣几积分，默认 1
+	PerSearch  int64  // PRICE_PER_SEARCH：每次联网搜索额外加几积分，默认 0（两种方式都生效）
+	// PRICE_PER_SEARCH_DUCKDUCKGO / _TAVILY / _BOCHA：按搜索引擎单独定价，键是引擎名，没列出的引擎用 PerSearch
+	SearchPrices map[string]int64
+	InputPer1K   float64 // PRICE_INPUT_PER_1K：按用量，每 1000 个输入 token 多少积分
+	OutputPer1K  float64 // PRICE_OUTPUT_PER_1K：按用量，每 1000 个输出 token 多少积分
+	MaxCharge    int64   // MAX_CHARGE：按用量，每次提问最多扣几积分（也是预扣金额），默认 100
 }
 
 func (p Pricing) withDefaults() Pricing {
@@ -84,14 +92,25 @@ func (p Pricing) withDefaults() Pricing {
 	return p
 }
 
+// searchEngineNames 是可以单独定价的搜索引擎。
+var searchEngineNames = []string{"duckduckgo", "tavily", "bocha"}
+
 func (p Pricing) problems() []string {
+	if p.PerSearch < 0 {
+		return []string{"PRICE_PER_SEARCH 不能是负数"}
+	}
+	for name, price := range p.SearchPrices {
+		if !slices.Contains(searchEngineNames, name) {
+			return []string{"按引擎定价只支持 duckduckgo / tavily / bocha，不认识：" + name}
+		}
+		if price < 0 {
+			return []string{"PRICE_PER_SEARCH_" + strings.ToUpper(name) + " 不能是负数"}
+		}
+	}
 	switch p.Mode {
 	case BillingPerRequest:
-		if p.PerSearch < 0 {
-			return []string{"PRICE_PER_SEARCH 不能是负数"}
-		}
 	case BillingPerToken:
-		if p.InputPer1K < 0 || p.OutputPer1K < 0 || p.PerSearch < 0 || p.InputPer1K+p.OutputPer1K == 0 {
+		if p.InputPer1K < 0 || p.OutputPer1K < 0 || p.InputPer1K+p.OutputPer1K == 0 {
 			return []string{"BILLING_MODE=per_token 时要设置 PRICE_INPUT_PER_1K / PRICE_OUTPUT_PER_1K（不能是负数）"}
 		}
 	default:
@@ -100,20 +119,36 @@ func (p Pricing) problems() []string {
 	return nil
 }
 
+// searchPrice 是用 engine 搜索一次的价格。engine 可能带「（缓存）」后缀，按原来的引擎计价。
+func (p Pricing) searchPrice(engine string) int64 {
+	engine, _, _ = strings.Cut(engine, "（")
+	if price, ok := p.SearchPrices[engine]; ok {
+		return price
+	}
+	return p.PerSearch
+}
+
 // reserve 是提问前要冻结的最高费用。
 func (p Pricing) reserve() int64 {
 	if p.Mode == BillingPerToken {
 		return p.MaxCharge
 	}
-	return p.PerRequest + maxSearchesPerTurn*p.PerSearch
+	var top int64
+	for _, e := range searchEngineNames {
+		top = max(top, p.searchPrice(e))
+	}
+	return p.PerRequest + maxSearchesPerTurn*top
 }
 
-// cost 按实际用量算应扣金额，不会超过 reserve()。
-func (p Pricing) cost(promptTokens, completionTokens, searches int) int64 {
-	c := p.PerRequest + int64(searches)*p.PerSearch
+// cost 按实际用量算应扣金额，不会超过 reserve()。engines 是每次成功搜索用的引擎。
+func (p Pricing) cost(promptTokens, completionTokens int, engines []string) int64 {
+	var search int64
+	for _, e := range engines {
+		search += p.searchPrice(e)
+	}
+	c := p.PerRequest + search
 	if p.Mode == BillingPerToken {
-		c = int64(math.Ceil((float64(promptTokens)*p.InputPer1K+float64(completionTokens)*p.OutputPer1K)/1000)) +
-			int64(searches)*p.PerSearch
+		c = int64(math.Ceil((float64(promptTokens)*p.InputPer1K+float64(completionTokens)*p.OutputPer1K)/1000)) + search
 	}
 	return max(0, min(c, p.reserve()))
 }

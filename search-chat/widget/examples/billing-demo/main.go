@@ -137,7 +137,7 @@ func main() {
 	cfg := searchchat.ConfigFromEnv() // 模型、搜索、计费规则（BILLING_MODE 等）都可以用环境变量配置
 	cfg.Authenticate = authenticate(s)
 	cfg.Billing = billing
-	if cfg.Pricing.Mode == "" && cfg.Pricing.PerRequest == 0 {
+	if cfg.Pricing.Mode == "" && cfg.Pricing.PerRequest == 0 && cfg.Pricing.SearchPrices == nil {
 		cfg.Pricing = searchchat.Pricing{Mode: searchchat.BillingPerRequest, PerRequest: 2, PerSearch: 1}
 	}
 	if problems := cfg.Problems(); len(problems) > 0 {

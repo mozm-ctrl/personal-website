@@ -64,12 +64,13 @@ func ConfigFromEnv() Config {
 		TrustProxy:         envBool("TRUST_PROXY"),
 		MaxConcurrent:      envInt("MAX_CONCURRENT", 4),
 		Pricing: Pricing{
-			Mode:        strings.ToLower(env("BILLING_MODE", "")),
-			PerRequest:  int64(envInt("PRICE_PER_REQUEST", 0)),
-			PerSearch:   int64(envInt("PRICE_PER_SEARCH", 0)),
-			InputPer1K:  envFloat("PRICE_INPUT_PER_1K", 0),
-			OutputPer1K: envFloat("PRICE_OUTPUT_PER_1K", 0),
-			MaxCharge:   int64(envInt("MAX_CHARGE", 0)),
+			Mode:         strings.ToLower(env("BILLING_MODE", "")),
+			PerRequest:   int64(envInt("PRICE_PER_REQUEST", 0)),
+			PerSearch:    int64(envInt("PRICE_PER_SEARCH", 0)),
+			SearchPrices: envSearchPrices(),
+			InputPer1K:   envFloat("PRICE_INPUT_PER_1K", 0),
+			OutputPer1K:  envFloat("PRICE_OUTPUT_PER_1K", 0),
+			MaxCharge:    int64(envInt("MAX_CHARGE", 0)),
 		},
 		DailyLimitPerUser: envInt("DAILY_LIMIT_PER_USER", 0),
 	}
@@ -141,6 +142,20 @@ func envInt(name string, def int) int {
 		return n
 	}
 	return def
+}
+
+// envSearchPrices 读取 PRICE_PER_SEARCH_DUCKDUCKGO / _TAVILY / _BOCHA，只收录设置了的引擎。
+func envSearchPrices() map[string]int64 {
+	var m map[string]int64
+	for _, e := range searchEngineNames {
+		if n, err := strconv.Atoi(env("PRICE_PER_SEARCH_"+strings.ToUpper(e), "")); err == nil {
+			if m == nil {
+				m = map[string]int64{}
+			}
+			m[e] = int64(n)
+		}
+	}
+	return m
 }
 
 func envFloat(name string, def float64) float64 {

@@ -105,6 +105,7 @@ curl http://服务器地址:8080/healthz
 | `BILLING_MODE` | `per_request` 按次 / `per_token` 按用量 | `per_request` |
 | `PRICE_PER_REQUEST` | 按次：每次提问扣几积分 | `1` |
 | `PRICE_PER_SEARCH` | 每次联网搜索额外扣几积分（两种方式都生效） | `0` |
+| `PRICE_PER_SEARCH_DUCKDUCKGO` / `_TAVILY` / `_BOCHA` | 按搜索引擎单独定价，设置了的引擎用这个价，没设置的用 `PRICE_PER_SEARCH`。例如 `DUCKDUCKGO=0`、`TAVILY=1`、`BOCHA=1`：用免费的 DuckDuckGo 不加钱，退到收费引擎才加 | — |
 | `PRICE_INPUT_PER_1K` / `PRICE_OUTPUT_PER_1K` | 按用量：每 1000 个输入 / 输出 token 多少积分，可以是小数 | — |
 | `MAX_CHARGE` | 按用量：单次提问最多扣几积分（也是预扣金额） | `100` |
 | `DAILY_LIMIT_PER_USER` | 每个用户每天最多问几次；`0` 不限 | `0` |
@@ -301,12 +302,29 @@ LLM_BASE_URL=http://localhost:11434/v1 LLM_MODEL=qwen3:8b LLM_REASONING_EFFORT=n
 
 | 方式 | 怎么算 | 提问前预扣 | 配置 |
 | --- | --- | --- | --- |
-| **按次**（默认） | 每次提问 `PerRequest`，每次联网搜索再加 `PerSearch` | `PerRequest + 2 × PerSearch`（每轮最多搜 2 次） | `BILLING_MODE=per_request` `PRICE_PER_REQUEST=2` `PRICE_PER_SEARCH=1` |
-| **按用量** | `ceil((输入token × InputPer1K + 输出token × OutputPer1K) / 1000) + 搜索次数 × PerSearch` | `MaxCharge` | `BILLING_MODE=per_token` `PRICE_INPUT_PER_1K=2` `PRICE_OUTPUT_PER_1K=8` `MAX_CHARGE=20` |
+| **按次**（默认） | 每次提问 `PerRequest`，每次联网搜索再加这次所用引擎的搜索价 | `PerRequest + 2 × 最贵的搜索价`（每轮最多搜 2 次） | `BILLING_MODE=per_request` `PRICE_PER_REQUEST=2` `PRICE_PER_SEARCH=1` |
+| **按用量** | `ceil((输入token × InputPer1K + 输出token × OutputPer1K) / 1000) + 搜索费` | `MaxCharge` | `BILLING_MODE=per_token` `PRICE_INPUT_PER_1K=2` `PRICE_OUTPUT_PER_1K=8` `MAX_CHARGE=20` |
 
 - token 数取自模型返回的 `usage`（一轮里多次调用模型的总和）；失败的搜索不收费。
 - 按用量时实际费用超过 `MaxCharge` 就按 `MaxCharge` 收，所以 `MaxCharge` 也是「单次提问最多花多少」。
 - 例：按次 `PerRequest=2, PerSearch=1` → 预扣 4；没搜索的问题扣 2（退回 2），搜索 1 次扣 3（退回 1）。
+
+**按搜索引擎定价**：搜索默认先用免费的 DuckDuckGo，被限流、出错或没结果时才改用你付费的 Tavily / 博查。如果只想在用了收费引擎时多收用户的钱，设置 `SearchPrices`（或环境变量 `PRICE_PER_SEARCH_DUCKDUCKGO` 等）：
+
+```go
+cfg.Pricing = searchchat.Pricing{
+    PerRequest:   2,
+    SearchPrices: map[string]int64{"duckduckgo": 0, "tavily": 1, "bocha": 1}, // 没列出的引擎用 PerSearch
+}
+```
+
+| 问题 | 搜索情况 | 扣用户 |
+| --- | --- | --- |
+| 「1+1」 | 不搜索 | 2 |
+| 「今天的科技新闻」 | DuckDuckGo 搜 1 次 | 2 |
+| 「今天的科技新闻」 | DuckDuckGo 被限流，改用 Tavily 搜 1 次 | 3 |
+
+预扣按最贵的引擎算（这里是 2 + 2×1 = 4），回答后按实际用的引擎多退少补。命中缓存的搜索按当初搜到它的引擎计价；失败的搜索不收费。结算时 `Charge.SearchEngines` 会列出每次成功搜索用的引擎，方便对账。
 
 ### 接口说明
 
@@ -323,6 +341,7 @@ type Charge struct {
     PromptTokens     int    // 输入 token 数
     CompletionTokens int    // 输出 token 数
     Searches         int    // 成功的联网搜索次数
+    SearchEngines    []string // 每次成功搜索用的引擎：duckduckgo / tavily / bocha
     Reserved         int64  // 提问前冻结的积分
     Cost             int64  // 应扣积分（≤ Reserved）
 }

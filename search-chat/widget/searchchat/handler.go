@@ -217,16 +217,17 @@ func (h *handler) chat(w http.ResponseWriter, r *http.Request) {
 		c := Charge{
 			UserID: userID, RequestID: reqID,
 			PromptTokens: res.Usage.PromptTokens, CompletionTokens: res.Usage.CompletionTokens,
-			Searches: res.okSearches(), Reserved: reserved,
+			SearchEngines: res.okEngines(), Reserved: reserved,
 		}
-		c.Cost = h.cfg.Pricing.cost(c.PromptTokens, c.CompletionTokens, c.Searches)
+		c.Searches = len(c.SearchEngines)
+		c.Cost = h.cfg.Pricing.cost(c.PromptTokens, c.CompletionTokens, c.SearchEngines)
 		if err := h.cfg.Billing.Settle(context.WithoutCancel(r.Context()), c); err != nil {
 			// 回答已经生成，照常返回；冻结的积分由接入方按 request_id 对账处理
 			logf("结算失败 %s request=%s cost=%d：%s", who, reqID, c.Cost, err)
 		}
 		resp.RequestID, resp.Cost = reqID, &c.Cost
-		logf("扣费 %s request=%s 输入 %d 输出 %d token 搜索 %d 次 扣 %d 积分（预扣 %d）",
-			who, reqID, c.PromptTokens, c.CompletionTokens, c.Searches, c.Cost, reserved)
+		logf("扣费 %s request=%s 输入 %d 输出 %d token 搜索 %d 次 %v 扣 %d 积分（预扣 %d）",
+			who, reqID, c.PromptTokens, c.CompletionTokens, c.Searches, c.SearchEngines, c.Cost, reserved)
 	}
 	// 日志里不记录提问内容和 Key，只记录耗时和搜索情况
 	logf("回答 %s 用时 %.1fs 搜索 %d 次 来源 %d 条", who, resp.Seconds, len(res.Searches), len(resp.Sources))

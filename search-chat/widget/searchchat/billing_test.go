@@ -346,17 +346,55 @@ func TestRateLimitByUser(t *testing.T) {
 }
 
 func TestPricing(t *testing.T) {
+	ddg, tav := []string{"duckduckgo"}, []string{"tavily"}
 	p := Pricing{}.withDefaults()
-	if p.Mode != BillingPerRequest || p.reserve() != 1 || p.cost(9999, 9999, 0) != 1 {
+	if p.Mode != BillingPerRequest || p.reserve() != 1 || p.cost(9999, 9999, nil) != 1 {
 		t.Errorf("default pricing: %+v reserve=%d", p, p.reserve())
 	}
 	p = Pricing{PerRequest: 2, PerSearch: 3}.withDefaults()
-	if p.reserve() != 8 || p.cost(0, 0, 1) != 5 || p.cost(0, 0, 2) != 8 {
-		t.Errorf("per request: reserve=%d cost1=%d", p.reserve(), p.cost(0, 0, 1))
+	if p.reserve() != 8 || p.cost(0, 0, ddg) != 5 || p.cost(0, 0, []string{"duckduckgo", "bocha"}) != 8 {
+		t.Errorf("per request: reserve=%d cost1=%d", p.reserve(), p.cost(0, 0, ddg))
 	}
 	p = Pricing{Mode: BillingPerToken, InputPer1K: 0.5, OutputPer1K: 2, PerSearch: 1, MaxCharge: 10}.withDefaults()
-	if p.cost(1000, 1000, 1) != 4 || p.cost(100000, 0, 0) != 10 {
-		t.Errorf("per token: %d %d", p.cost(1000, 1000, 1), p.cost(100000, 0, 0))
+	if p.cost(1000, 1000, tav) != 4 || p.cost(100000, 0, nil) != 10 {
+		t.Errorf("per token: %d %d", p.cost(1000, 1000, tav), p.cost(100000, 0, nil))
+	}
+
+	// 按引擎定价：DuckDuckGo 免费，退到收费引擎才加钱；命中缓存按原引擎算
+	p = Pricing{PerRequest: 2, SearchPrices: map[string]int64{"duckduckgo": 0, "tavily": 1, "bocha": 1}}.withDefaults()
+	for _, c := range []struct {
+		engines []string
+		want    int64
+	}{
+		{nil, 2},
+		{ddg, 2},
+		{[]string{"duckduckgo", "duckduckgo（缓存）"}, 2},
+		{tav, 3},
+		{[]string{"bocha（缓存）"}, 3},
+		{[]string{"duckduckgo", "tavily"}, 3},
+		{[]string{"tavily", "bocha"}, 4},
+	} {
+		if got := p.cost(0, 0, c.engines); got != c.want {
+			t.Errorf("per engine %v: cost=%d, want %d", c.engines, got, c.want)
+		}
+	}
+	if p.reserve() != 4 {
+		t.Errorf("per engine reserve = %d, want 2 + 2×1", p.reserve())
+	}
+	// 没列出的引擎用 PerSearch
+	p = Pricing{PerRequest: 1, PerSearch: 5, SearchPrices: map[string]int64{"duckduckgo": 0}}.withDefaults()
+	if p.cost(0, 0, tav) != 6 || p.cost(0, 0, ddg) != 1 || p.reserve() != 11 {
+		t.Errorf("fallback to PerSearch: %d %d %d", p.cost(0, 0, tav), p.cost(0, 0, ddg), p.reserve())
+	}
+	for _, bad := range []map[string]int64{{"google": 1}, {"tavily": -1}} {
+		if len((Pricing{SearchPrices: bad}).withDefaults().problems()) == 0 {
+			t.Errorf("SearchPrices %v should be a config problem", bad)
+		}
+	}
+	// 失败的搜索不计费
+	r := turnResult{Searches: []searchLog{{Engine: "duckduckgo", Error: "搜索失败"}, {Engine: "tavily"}}}
+	if got := r.okEngines(); len(got) != 1 || got[0] != "tavily" {
+		t.Errorf("okEngines = %v", got)
 	}
 	if len((Config{LLMBaseURL: "x", LLMModel: "m", SearchEngine: "auto", Billing: newFakeBilling(nil)}).Problems()) == 0 {
 		t.Error("Billing without Authenticate should be a config problem")

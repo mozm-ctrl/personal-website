@@ -43,15 +43,15 @@ type turnResult struct {
 	Usage    tokenUsage // 本轮多次调用模型的 token 总和
 }
 
-// okSearches 是成功的搜索次数（用于计费，失败的搜索不收费）。
-func (r turnResult) okSearches() int {
-	n := 0
+// okEngines 是每次成功搜索用的引擎（用于计费，失败的搜索不收费）。
+func (r turnResult) okEngines() []string {
+	var engines []string
 	for _, s := range r.Searches {
 		if s.Error == "" {
-			n++
+			engines = append(engines, s.Engine)
 		}
 	}
-	return n
+	return engines
 }
 
 func (r *turnResult) addUsage(u tokenUsage) {
